@@ -4,6 +4,7 @@
     <arg name="config_file" default="$(find lightning)/config/fastliodata.yaml"/>
 
     <node pkg="lightning" type="run_slam_online" name="run_slam_online" output="screen"
-        args="--config $(arg config_file)"      launch-prefix="gdb -ex run --args"/>
-
+        args="--config $(arg config_file)"     />
+    <node pkg="rosbag" type="play" name="bag_play_node" args="-r1 /home/ly/Downloads/songling_ground_MID360_FDI.bag"/>
+    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find lightning)/rviz/loam_livox.rviz" />
 </launch>
