@@ -110,7 +110,11 @@ bool SlamSystem::Init(const std::string& yaml_path) {
             });
 
         savemap_service_ = node_->advertiseService("lightning/save_map", &SlamSystem::SaveMap, this);
-
+        pubLaserCloudFull_ = node_->advertise<sensor_msgs::PointCloud2>("/current_scan_world", 1);
+        pubLaserCloudFull_body_ = node_->advertise<sensor_msgs::PointCloud2>("/current_scan_body", 1);
+        pubOdomAftMapped_ = node_->advertise<nav_msgs::Odometry>("/odometry", 1);
+        pubPath_ = node_->advertise<nav_msgs::Path>("/slam_path", 1);
+        map_pub_ = node_->advertise<nav_msgs::OccupancyGrid>("map", 1, true);
         LOG(INFO) << "online slam node has been created.";
     }
 
@@ -230,8 +234,94 @@ void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {
         return;
     }
     lio_->ProcessIMU(imu);
+    publish_odometry(pubOdomAftMapped_);
+    publish_path(pubPath_);
 }
+void SlamSystem::publishMap() {
+    /// 存为ROS兼容的模式
+    NavState state_point = lio_->GetState();
+    if (nullptr == g2p5_->GetNewestMap())
+    {
+      return;
+    }
+    auto map = g2p5_->GetNewestMap()->ToROS();
+    map.header.frame_id  = "camera_init";
+    map.header.stamp  = ros::Time().fromSec(state_point.timestamp_);
+    map_pub_.publish(map);
+}
+void SlamSystem::publish_odometry(const ros::Publisher & pubOdomAftMapped)
+{
+    nav_msgs::Odometry odomAftMapped;
+    odomAftMapped.header.frame_id = "camera_init";
+    odomAftMapped.child_frame_id = "body";
+    NavState state_point = lio_->GetState();
+    static double last_timestamp = 0;
+    if (state_point.timestamp_  <= last_timestamp) {
+        return; // 跳过重复数据
+    }
+    last_timestamp = state_point.timestamp_; 
+    odomAftMapped.header.stamp = ros::Time().fromSec(state_point.timestamp_);// ros::Time().fromSec(lidar_end_time);
+    odomAftMapped.pose.pose.position.x = state_point.pos_(0);
+    odomAftMapped.pose.pose.position.y = state_point.pos_(1);
+    odomAftMapped.pose.pose.position.z = state_point.pos_(2);
+    odomAftMapped.pose.pose.orientation.x = state_point.rot_.unit_quaternion().coeffs().x();
+    odomAftMapped.pose.pose.orientation.y = state_point.rot_.unit_quaternion().coeffs().y();
+    odomAftMapped.pose.pose.orientation.z = state_point.rot_.unit_quaternion().coeffs().z();
+    odomAftMapped.pose.pose.orientation.w = state_point.rot_.unit_quaternion().coeffs().w();
+    pubOdomAftMapped.publish(odomAftMapped);
 
+    static tf::TransformBroadcaster br;
+    tf::Transform transform;
+    tf::Quaternion q;
+    transform.setOrigin(tf::Vector3(odomAftMapped.pose.pose.position.x, \
+                                    odomAftMapped.pose.pose.position.y, \
+                                    odomAftMapped.pose.pose.position.z));
+    q.setW(odomAftMapped.pose.pose.orientation.w);
+    q.setX(odomAftMapped.pose.pose.orientation.x);
+    q.setY(odomAftMapped.pose.pose.orientation.y);
+    q.setZ(odomAftMapped.pose.pose.orientation.z);
+    transform.setRotation( q );
+    br.sendTransform( tf::StampedTransform( transform, odomAftMapped.header.stamp, "camera_init", "body" ) );
+}
+void SlamSystem::publish_cloud(const ros::Publisher &pubLaserCloudFull, const std::string &frame_id) {
+    NavState state_point = lio_->GetState();
+    static double last_timestamp = 0;
+    if (!state_point.pose_is_ok_ || state_point.timestamp_  <= last_timestamp) {
+        return; // 跳过重复数据
+    }
+    last_timestamp = state_point.timestamp_; 
+    sensor_msgs::PointCloud2 laserCloudmsg;
+    pcl::toROSMsg(*(frame_id == "body" ? lio_->scan_down_body_ : lio_->scan_down_world_), laserCloudmsg);
+    laserCloudmsg.header.stamp  = ros::Time().fromSec(state_point.timestamp_); 
+    laserCloudmsg.header.frame_id  = frame_id;
+    pubLaserCloudFull.publish(laserCloudmsg); 
+}
+void SlamSystem::publish_path(const ros::Publisher pubPath)
+{
+    NavState state_point = lio_->GetState();
+    static nav_msgs::Path path;
+    path.header.stamp    = ros::Time().fromSec(state_point.timestamp_);
+    path.header.frame_id ="camera_init";
+    geometry_msgs::PoseStamped msg_body_pose;
+    msg_body_pose.header.frame_id = "camera_init";
+    msg_body_pose.header.stamp = ros::Time().fromSec(state_point.timestamp_);// ros::Time().fromSec(lidar_end_time);
+    msg_body_pose.pose.position.x = state_point.pos_(0);
+    msg_body_pose.pose.position.y = state_point.pos_(1);
+    msg_body_pose.pose.position.z = state_point.pos_(2);
+    msg_body_pose.pose.orientation.x = state_point.rot_.unit_quaternion().coeffs().x();
+    msg_body_pose.pose.orientation.y = state_point.rot_.unit_quaternion().coeffs().y();
+    msg_body_pose.pose.orientation.z = state_point.rot_.unit_quaternion().coeffs().z();
+    msg_body_pose.pose.orientation.w = state_point.rot_.unit_quaternion().coeffs().w();
+
+    /*** if path is too large, the rvis will crash ***/
+    static int jjj = 0;
+    jjj++;
+    if (jjj % 10 == 0) 
+    {
+        path.poses.push_back(msg_body_pose);
+        pubPath.publish(path);
+    }
+}
 void SlamSystem::ProcessLidar(const sensor_msgs::PointCloud2::ConstPtr& cloud) {
     if (running_ == false) {
         return;
@@ -239,7 +329,7 @@ void SlamSystem::ProcessLidar(const sensor_msgs::PointCloud2::ConstPtr& cloud) {
 
     lio_->ProcessPointCloud2(cloud);
     lio_->Run();
-
+    publish_cloud(pubLaserCloudFull_body_,"body");
     auto kf = lio_->GetKeyframe();
     if (kf != cur_kf_) {
         cur_kf_ = kf;
@@ -271,7 +361,7 @@ void SlamSystem::ProcessLidar(const livox_ros_driver::CustomMsg::ConstPtr& cloud
 
     lio_->ProcessPointCloud2(cloud);
     lio_->Run();
-
+    publish_cloud(pubLaserCloudFull_body_,"body");
     auto kf = lio_->GetKeyframe();
     if (kf != cur_kf_) {
         cur_kf_ = kf;
@@ -289,6 +379,7 @@ void SlamSystem::ProcessLidar(const livox_ros_driver::CustomMsg::ConstPtr& cloud
 
     if (options_.with_gridmap_) {
         g2p5_->PushKeyframe(cur_kf_);
+        publishMap();
     }
 
     if (ui_) {

@@ -12,7 +12,10 @@
 
 #include "lightning/SaveMap.h"
 #include "livox_ros_driver/CustomMsg.h"
-
+#include <nav_msgs/Odometry.h>
+#include <nav_msgs/Path.h>
+#include <tf/transform_datatypes.h>
+#include <tf/transform_broadcaster.h>
 #include "common/eigen_types.h"
 #include "common/imu.h"
 #include "common/keyframe.h"
@@ -77,7 +80,10 @@ class SlamSystem {
    private:
     /// ros端保存地图的实现
     bool SaveMap(SaveMapService::Request& request, SaveMapService::Response& response);
-
+    void publish_odometry(const ros::Publisher & pubOdomAftMapped);
+    void publish_cloud(const ros::Publisher &pubLaserCloudFull, const std::string &frame_id="camera_init");
+    void publish_path(const ros::Publisher pubPath);
+    void publishMap();
     Options options_;
     std::atomic_bool running_ = false;
 
@@ -101,6 +107,7 @@ class SlamSystem {
     ros::Subscriber imu_sub_;
     ros::Subscriber cloud_sub_;
     ros::Subscriber livox_sub_;
+    ros::Publisher pubLaserCloudFull_, pubLaserCloudFull_body_, pubOdomAftMapped_, pubPath_, map_pub_;
 };
 }  // namespace lightning
 

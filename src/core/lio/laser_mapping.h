@@ -129,7 +129,7 @@ class LaserMapping {
     /// 创建关键帧
     void MakeKF();
 
-   private:
+   public:
     Options options_;
 
     /// modules
